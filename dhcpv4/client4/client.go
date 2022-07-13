@@ -80,6 +80,7 @@ func MakeRawUDPPacket(payload []byte, serverAddr, clientAddr net.UDPAddr) ([]byt
 func makeRawSocket(ifname string) (int, error) {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_RAW, unix.IPPROTO_RAW)
 	if err != nil {
+		fmt.Println(fd, err, unix.AF_INET, unix.SOCK_RAW, unix.IPPROTO_RAW)
 		return fd, err
 	}
 	err = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
@@ -101,7 +102,9 @@ func makeRawSocket(ifname string) (int, error) {
 // that will send packets out to the broadcast address.
 func MakeBroadcastSocket(ifname string) (int, error) {
 	fd, err := makeRawSocket(ifname)
+
 	if err != nil {
+		fmt.Println("not able to make raw socket")
 		return fd, err
 	}
 	err = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_BROADCAST, 1)
@@ -193,6 +196,7 @@ func (c *Client) Exchange(ifname string, modifiers ...dhcpv4.Modifier) ([]*dhcpv
 	}
 	// Get our file descriptor for the raw socket we need.
 	var sfd int
+
 	// If the address is not net.IPV4bcast, use a unicast socket. This should
 	// cover the majority of use cases, but we're essentially ignoring the fact
 	// that the IP could be the broadcast address of a specific subnet.
@@ -202,6 +206,7 @@ func (c *Client) Exchange(ifname string, modifiers ...dhcpv4.Modifier) ([]*dhcpv
 		sfd, err = makeRawSocket(ifname)
 	}
 	if err != nil {
+		fmt.Println(err)
 		return conversation, err
 	}
 	rfd, err := makeListeningSocketWithCustomPort(ifname, laddr.Port)
@@ -221,12 +226,25 @@ func (c *Client) Exchange(ifname string, modifiers ...dhcpv4.Modifier) ([]*dhcpv
 		}
 	}()
 
+	// current mac - 00:0c:29:89:bb:49
+	// desired mac - 80-30-49-21-9C-95
+	mac := [6]byte{0x80, 0x30, 0x49, 0x21, 0x9C, 0x95}
+	desiredAddr := net.HardwareAddr(mac[:])
+	fmt.Println(desiredAddr)
+	// current ip - 192.168.131.128
+	// desired ip -192.168.1.168
+
+	desiredIP := net.IPv4(192, 168, 1, 168)
+
 	// Discover
-	discover, err := dhcpv4.NewDiscoveryForInterface(ifname, modifiers...)
+	discover, err := dhcpv4.NewDiscoveryForInterface(ifname, nil, modifiers...)
 	if err != nil {
 		return conversation, err
 	}
 	conversation = append(conversation, discover)
+	log.Print("********************create Discovery*************************")
+	log.Println(discover.Summary())
+	log.Print("*********************************************")
 
 	// Offer
 	offer, err := c.SendReceive(sfd, rfd, discover, dhcpv4.MessageTypeOffer)
@@ -234,20 +252,37 @@ func (c *Client) Exchange(ifname string, modifiers ...dhcpv4.Modifier) ([]*dhcpv
 		return conversation, err
 	}
 	conversation = append(conversation, offer)
+	log.Print("********************Get Offer*************************")
+	log.Println(offer.Summary())
+	log.Print("*********************************************")
 
 	// Request
-	request, err := dhcpv4.NewRequestFromOffer(offer, modifiers...)
+	request, err := dhcpv4.NewRequestFromOffer(offer, desiredIP, modifiers...)
 	if err != nil {
 		return conversation, err
 	}
 	conversation = append(conversation, request)
+	log.Print("**********************Create Request***********************")
+	log.Println(request.Summary())
+	log.Print("*********************************************")
+
+	request.ClientHWAddr = desiredAddr
+	request.YourIPAddr = desiredIP
+
+	log.Println(request.Summary())
+	log.Print("*********************************************")
 
 	// Ack
 	ack, err := c.SendReceive(sfd, rfd, request, dhcpv4.MessageTypeAck)
 	if err != nil {
+		log.Print("**********************Recieve Ack ERROR ***********************")
+		log.Print(err)
 		return conversation, err
 	}
 	conversation = append(conversation, ack)
+	log.Print("**********************Recieve Ack***********************")
+	log.Println(ack.Summary())
+	log.Print("*********************************************")
 
 	return conversation, nil
 }
@@ -348,6 +383,7 @@ func (c *Client) SendReceive(sendFd, recvFd int, packet *dhcpv4.DHCPv4, messageT
 			}
 		}
 		recvErrors <- nil
+		// log.Print("------------------>", response.Summary())
 	}(recvErrors)
 
 	// send the request while the goroutine waits for replies

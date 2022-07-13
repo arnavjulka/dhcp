@@ -163,10 +163,22 @@ func New(modifiers ...Modifier) (*DHCPv4, error) {
 // NewDiscoveryForInterface builds a new DHCPv4 Discovery message, with a default
 // Ethernet HW type and the hardware address obtained from the specified
 // interface.
-func NewDiscoveryForInterface(ifname string, modifiers ...Modifier) (*DHCPv4, error) {
+// ORIGINAL
+// func NewDiscoveryForInterface(ifname string, modifiers ...Modifier) (*DHCPv4, error) {
+// 	iface, err := net.InterfaceByName(ifname)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	return NewDiscovery(iface.HardwareAddr, modifiers...)
+// }
+
+func NewDiscoveryForInterface(ifname string, hwaddr net.HardwareAddr, modifiers ...Modifier) (*DHCPv4, error) {
 	iface, err := net.InterfaceByName(ifname)
 	if err != nil {
 		return nil, err
+	}
+	if hwaddr != nil {
+		return NewDiscovery(hwaddr, modifiers...)
 	}
 	return NewDiscovery(iface.HardwareAddr, modifiers...)
 }
@@ -231,14 +243,31 @@ func NewInform(hwaddr net.HardwareAddr, localIP net.IP, modifiers ...Modifier) (
 }
 
 // NewRequestFromOffer builds a DHCPv4 request from an offer.
-func NewRequestFromOffer(offer *DHCPv4, modifiers ...Modifier) (*DHCPv4, error) {
+// func NewRequestFromOffer(offer *DHCPv4, modifiers ...Modifier) (*DHCPv4, error) {
+// 	return New(PrependModifiers(modifiers,
+// 		WithReply(offer),
+// 		WithMessageType(MessageTypeRequest),
+// 		WithClientIP(offer.ClientIPAddr),
+// 		WithOption(OptRequestedIPAddress(offer.YourIPAddr)),
+// 		// This is usually the server IP.
+// 		WithOptionCopied(offer, OptionServerIdentifier),
+// 		WithRequestedOptions(
+// 			OptionSubnetMask,
+// 			OptionRouter,
+// 			OptionDomainName,
+// 			OptionDomainNameServer,
+// 		),
+// 	)...)
+// }
+
+func NewRequestFromOffer(offer *DHCPv4, ip net.IP, modifiers ...Modifier) (*DHCPv4, error) {
 	return New(PrependModifiers(modifiers,
-		WithReply(offer),
-		WithMessageType(MessageTypeRequest),
-		WithClientIP(offer.ClientIPAddr),
-		WithOption(OptRequestedIPAddress(offer.YourIPAddr)),
+		WithReply(offer),                      // client hardware needs to be changed
+		WithMessageType(MessageTypeRequest),   // sorted
+		WithClientIP(offer.ClientIPAddr),      // offer.ClientIPAddr was being used, i've put ip for experiment
+		WithOption(OptRequestedIPAddress(ip)), // sorted
 		// This is usually the server IP.
-		WithOptionCopied(offer, OptionServerIdentifier),
+		WithOptionCopied(offer, OptionServerIdentifier), // sorted
 		WithRequestedOptions(
 			OptionSubnetMask,
 			OptionRouter,
