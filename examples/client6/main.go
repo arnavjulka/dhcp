@@ -8,7 +8,7 @@ import (
 )
 
 var (
-	iface = flag.String("i", "ens33", "Interface to configure via DHCPv6")
+	iface = flag.String("i", "ens192", "Interface to configure via DHCPv6")
 )
 
 func main() {
