@@ -233,7 +233,8 @@ func (c *Client) Exchange(ifname string, modifiers ...dhcpv4.Modifier) ([]*dhcpv
 	// desired mac - 00.50.56.81.96.60 // didnt work NAK different network
 	// desired mac - 00.50.56.81.02.b4 // didnt work NAK different network
 	// desired mac - 00.50.56.81.12.9c
-	mac := [6]byte{0x00, 0x50, 0x56, 0x81, 0x12, 0x9C}
+	// desired mac - 00.50.56.81.de.eb
+	mac := [6]byte{0x00, 0x50, 0x56, 0x81, 0xDE, 0xEB}
 
 	desiredAddr := net.HardwareAddr(mac[:])
 	fmt.Println(desiredAddr)
@@ -242,9 +243,10 @@ func (c *Client) Exchange(ifname string, modifiers ...dhcpv4.Modifier) ([]*dhcpv
 	// desired ip(active) - 10.11.4.4 // didnt work
 	// desired ip(active) - 10.11.0.27 // // didnt work NAK different network
 	// desired ip(active) - 10.11.0.117 // didnt work NAK different network
-	// desired ip(active) - 10.11.0.24
+	// desired ip(active) - 10.11.0.24 //
+	// desired ip(active) - 10.11.0.88
 
-	desiredIP := net.IPv4(10, 11, 0, 24)
+	desiredIP := net.IPv4(10, 11, 0, 88)
 
 	// Discover
 	discover, err := dhcpv4.NewDiscoveryForInterface(ifname, nil, modifiers...)
@@ -255,34 +257,34 @@ func (c *Client) Exchange(ifname string, modifiers ...dhcpv4.Modifier) ([]*dhcpv
 	log.Print("********************create Discovery*************************")
 	log.Println(discover.Summary())
 	log.Print("*********************************************")
-	// discover.YourIPAddr = desiredIP
-	// discover.ClientHWAddr = desiredAddr
+	discover.YourIPAddr = desiredIP
+	discover.ClientHWAddr = desiredAddr
 
 	// log.Print("********************create Discovery*************************")
 	// log.Println(discover.Summary())
 	// log.Print("*********************************************")
 
-	discover.YourIPAddr = desiredIP
-	discover.ClientHWAddr = desiredAddr
+	// discover.YourIPAddr = desiredIP
+	// discover.ClientHWAddr = desiredAddr
 
 	// Offer
-	offer, _ := c.SendReceive(sfd, rfd, discover, dhcpv4.MessageTypeOffer)
-	if err != nil {
-		return conversation, err
-	}
-	conversation = append(conversation, offer)
-	log.Print("********************Get Offer*************************")
-	log.Println(offer.Summary())
-	log.Print("*********************************************")
+	// offer, _ := c.SendReceive(sfd, rfd, discover, dhcpv4.MessageTypeOffer)
+	// if err != nil {
+	// 	return conversation, err
+	// }
+	// conversation = append(conversation, offer)
+	// log.Print("********************Get Offer*************************")
+	// log.Println(offer.Summary())
+	// log.Print("*********************************************")
 
-	editOffer(offer, desiredIP, desiredAddr)
+	editOffer(discover, desiredIP, desiredAddr)
 
 	log.Print("********************Get Offer*************************")
-	log.Println(offer.Summary())
+	log.Println(discover.Summary())
 	log.Print("*********************************************")
 
 	// Request
-	request, err := dhcpv4.NewRequestFromOffer(offer, desiredIP, modifiers...)
+	request, err := dhcpv4.NewRequestFromOffer(discover, desiredIP, modifiers...)
 	if err != nil {
 		return conversation, err
 	}
