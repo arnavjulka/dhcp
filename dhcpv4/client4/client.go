@@ -451,7 +451,6 @@ func (c *Client) SendReceive(sendFd, recvFd int, packet *dhcpv4.DHCPv4, messageT
 			}
 		}
 		recvErrors <- nil
-		// log.Print("------------------>", response.Summary())
 	}(recvErrors)
 
 	// send the request while the goroutine waits for replies
