@@ -28,7 +28,7 @@ func main() {
 	// still want to know what packets were exchanged until then.
 	// A default Solicit packet will be used during the "conversation",
 	// which can be manipulated by using modifiers.
-	_, err := client.Exchange(*iface)
+	_, err := client.Renew(*iface)
 
 	// log.Print("-----------------------------------------")
 	// Summary() prints a verbose representation of the exchanged packets.
