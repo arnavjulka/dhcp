@@ -80,7 +80,6 @@ func MakeRawUDPPacket(payload []byte, serverAddr, clientAddr net.UDPAddr) ([]byt
 func makeRawSocket(ifname string) (int, error) {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_RAW, unix.IPPROTO_RAW)
 	if err != nil {
-		fmt.Println(fd, err, unix.AF_INET, unix.SOCK_RAW, unix.IPPROTO_RAW)
 		return fd, err
 	}
 	err = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
@@ -102,9 +101,7 @@ func makeRawSocket(ifname string) (int, error) {
 // that will send packets out to the broadcast address.
 func MakeBroadcastSocket(ifname string) (int, error) {
 	fd, err := makeRawSocket(ifname)
-
 	if err != nil {
-		fmt.Println("not able to make raw socket")
 		return fd, err
 	}
 	err = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_BROADCAST, 1)
@@ -194,7 +191,83 @@ func (c *Client) Exchange(ifname string, modifiers ...dhcpv4.Modifier) ([]*dhcpv
 	if err != nil {
 		return nil, err
 	}
-	fmt.Println(raddr, laddr)
+	// Get our file descriptor for the raw socket we need.
+	var sfd int
+	// If the address is not net.IPV4bcast, use a unicast socket. This should
+	// cover the majority of use cases, but we're essentially ignoring the fact
+	// that the IP could be the broadcast address of a specific subnet.
+	if raddr.IP.Equal(net.IPv4bcast) {
+		sfd, err = MakeBroadcastSocket(ifname)
+	} else {
+		sfd, err = makeRawSocket(ifname)
+	}
+	if err != nil {
+		return conversation, err
+	}
+	rfd, err := makeListeningSocketWithCustomPort(ifname, laddr.Port)
+	if err != nil {
+		return conversation, err
+	}
+
+	defer func() {
+		// close the sockets
+		if err := unix.Close(sfd); err != nil {
+			log.Printf("unix.Close(sendFd) failed: %v", err)
+		}
+		if sfd != rfd {
+			if err := unix.Close(rfd); err != nil {
+				log.Printf("unix.Close(recvFd) failed: %v", err)
+			}
+		}
+	}()
+
+	// Discover
+	discover, err := dhcpv4.NewDiscoveryForInterface(ifname, modifiers...)
+	if err != nil {
+		return conversation, err
+	}
+	conversation = append(conversation, discover)
+
+	// Offer
+	offer, err := c.SendReceive(sfd, rfd, discover, dhcpv4.MessageTypeOffer)
+	if err != nil {
+		return conversation, err
+	}
+	conversation = append(conversation, offer)
+
+	// Request
+	request, err := dhcpv4.NewRequestFromOffer(offer, modifiers...)
+	if err != nil {
+		return conversation, err
+	}
+	conversation = append(conversation, request)
+
+	// Ack
+	ack, err := c.SendReceive(sfd, rfd, request, dhcpv4.MessageTypeAck)
+	if err != nil {
+		return conversation, err
+	}
+	conversation = append(conversation, ack)
+
+	return conversation, nil
+}
+
+// Exchange runs a full DORA transaction: Discover, Offer, Request, Acknowledge,
+// over UDP. Does not retry in case of failures. Returns a list of DHCPv4
+// structures representing the exchange. It can contain up to four elements,
+// ordered as Discovery, Offer, Request and Acknowledge. In case of errors, an
+// error is returned, and the list of DHCPv4 objects will be shorted than 4,
+// containing all the sent and received DHCPv4 messages.
+func (c *Client) Renew(ifname string, modifiers ...dhcpv4.Modifier) ([]*dhcpv4.DHCPv4, error) {
+	conversation := make([]*dhcpv4.DHCPv4, 0)
+	raddr, err := c.getRemoteUDPAddr()
+	if err != nil {
+		return nil, err
+	}
+	laddr, err := c.getLocalUDPAddr()
+	if err != nil {
+		return nil, err
+	}
 	// Get our file descriptor for the raw socket we need.
 	var sfd int
 
@@ -227,64 +300,36 @@ func (c *Client) Exchange(ifname string, modifiers ...dhcpv4.Modifier) ([]*dhcpv
 		}
 	}()
 
-	// current mac - 00:50:56:81:9f:58
-	// desired mac - 00.50.56.81.bf.36 // worked but still inactive, renewed but yet inactive
-	// desired mac - 00:50:56:81:a9:29 // didnt work
-	// desired mac - 00.50.56.81.96.60 // didnt work NAK different network
-	// desired mac - 00.50.56.81.02.b4 // didnt work NAK different network
-	// desired mac - 00.50.56.81.12.9c
 	// desired mac - 00.50.56.81.de.eb
 	mac := [6]byte{0x00, 0x50, 0x56, 0x81, 0xDE, 0xEB}
-
 	desiredAddr := net.HardwareAddr(mac[:])
-	fmt.Println(desiredAddr)
-	// current ip - 10.11.0.77
-	// desired ip -  10.11.0.76 // worked but still inactive, renewed but yet inactive
-	// desired ip(active) - 10.11.4.4 // didnt work
-	// desired ip(active) - 10.11.0.27 // // didnt work NAK different network
-	// desired ip(active) - 10.11.0.117 // didnt work NAK different network
-	// desired ip(active) - 10.11.0.24 //
-	// desired ip(active) - 10.11.0.88
+	fmt.Println("Network Interface MAC", desiredAddr)
 
+	// desired ip(active) - 10.11.0.88
 	desiredIP := net.IPv4(10, 11, 0, 88)
+	fmt.Println("Network Interface IP", desiredIP)
 
 	// Discover
-	discover, err := dhcpv4.NewDiscoveryForInterface(ifname, nil, modifiers...)
+	discover, err := dhcpv4.NewDiscoveryForInterfaceWithHardware(ifname, nil, modifiers...)
 	if err != nil {
 		return conversation, err
 	}
 	conversation = append(conversation, discover)
+
+	discover.YourIPAddr = desiredIP
+	discover.ClientHWAddr = desiredAddr
 	log.Print("********************create Discovery*************************")
 	log.Println(discover.Summary())
 	log.Print("*********************************************")
-	discover.YourIPAddr = desiredIP
-	discover.ClientHWAddr = desiredAddr
 
-	// log.Print("********************create Discovery*************************")
-	// log.Println(discover.Summary())
-	// log.Print("*********************************************")
+	editOfferFromDiscover(discover, desiredIP, desiredAddr, net.IP{10, 11, 0, 1}, "cisco.com", net.IPMask(net.ParseIP("255.255.255.224").To4()))
 
-	// discover.YourIPAddr = desiredIP
-	// discover.ClientHWAddr = desiredAddr
-
-	// Offer
-	// offer, _ := c.SendReceive(sfd, rfd, discover, dhcpv4.MessageTypeOffer)
-	// if err != nil {
-	// 	return conversation, err
-	// }
-	// conversation = append(conversation, offer)
-	// log.Print("********************Get Offer*************************")
-	// log.Println(offer.Summary())
-	// log.Print("*********************************************")
-
-	editOffer(discover, desiredIP, desiredAddr)
-
-	log.Print("********************Get Offer*************************")
+	log.Print("********************Edited Offer*************************")
 	log.Println(discover.Summary())
 	log.Print("*********************************************")
 
 	// Request
-	request, err := dhcpv4.NewRequestFromOffer(discover, desiredIP, modifiers...)
+	request, err := dhcpv4.NewRequestFromOfferWithIP(discover, desiredIP, modifiers...)
 	if err != nil {
 		return conversation, err
 	}
@@ -295,9 +340,6 @@ func (c *Client) Exchange(ifname string, modifiers ...dhcpv4.Modifier) ([]*dhcpv
 
 	request.ClientHWAddr = desiredAddr
 	request.YourIPAddr = desiredIP
-
-	// log.Println(request.Summary())
-	// log.Print("*********************************************")
 
 	// Ack
 	ack, err := c.SendReceive(sfd, rfd, request, dhcpv4.MessageTypeAck)
@@ -330,7 +372,6 @@ func (c *Client) SendReceive(sendFd, recvFd int, packet *dhcpv4.DHCPv4, messageT
 	if err != nil {
 		return nil, err
 	}
-	fmt.Println(raddr, laddr, packetBytes)
 	// Create a goroutine to perform the blocking send, and time it out after
 	// a certain amount of time.
 	var (
@@ -433,37 +474,31 @@ func (c *Client) SendReceive(sendFd, recvFd int, packet *dhcpv4.DHCPv4, messageT
 	return response, nil
 }
 
-func editOffer(offer *dhcpv4.DHCPv4, ip net.IP, mac net.HardwareAddr) {
-	// fmt.Println(offer.Options)
-	// for key, value := range offer.Options {
-	// 	fmt.Println(key, value)
-	// }
-	offer.YourIPAddr = ip
-	offer.ClientHWAddr = mac
-	// 10.11.0.10 for
-	offer.UpdateOption(dhcpv4.OptRouter(net.IP{10, 11, 0, 1}))
-	offer.UpdateOption(dhcpv4.OptDNS(net.IP{10, 11, 0, 1}))
-	offer.UpdateOption(dhcpv4.OptServerIdentifier(net.IP{10, 11, 0, 1}))
+// change offer details  to have such details, REQUEST packet needs it
+// Subnet Mask: ffffffe0
+// Router: 10.11.0.65
+// Domain Name Server: 10.11.0.65
+// Domain Name: cisco.com
+// IP Addresses Lease Time: 1h44m49s
+// DHCP Message Type: OFFER
+// Server Identifier: 10.11.0.65
 
-	fmt.Print(offer.Summary())
+// these options translate to the following byte values if needed in future
+// 54 [10 11 0 65]
+// 51 [0 0 24 145]
+// 1 [255 255 255 224]
+// 3 [10 11 0 65]
+// 15 [99 105 115 99 111 46 99 111 109]
+// 6 [10 11 0 65]
+// 53 [2]
+func editOfferFromDiscover(discover *dhcpv4.DHCPv4, yourIP net.IP, mac net.HardwareAddr, serverIP net.IP, domainName string, serverIPMask net.IPMask) {
 
-	// 54 [10 11 0 65]
-	// 51 [0 0 24 145]
-	// 1 [255 255 255 224]
-	// 3 [10 11 0 65]
-	// 15 [99 105 115 99 111 46 99 111 109]
-	// 6 [10 11 0 65]
-	// 53 [2]
+	discover.YourIPAddr = yourIP
+	discover.ClientHWAddr = mac
+	discover.UpdateOption(dhcpv4.OptRouter(serverIP))
+	discover.UpdateOption(dhcpv4.OptDNS(serverIP))
+	discover.UpdateOption(dhcpv4.OptServerIdentifier(serverIP))
 
-	offer.UpdateOption(dhcpv4.OptDomainName("cisco.com"))
-	offer.UpdateOption(dhcpv4.OptSubnetMask(net.IPMask(net.ParseIP("255.255.255.224").To4()))) //255.255.255.224
-
-	// Subnet Mask: ffffffe0
-	// Router: 10.11.0.65
-	// Domain Name Server: 10.11.0.65
-	// Domain Name: cisco.com
-	// IP Addresses Lease Time: 1h44m49s
-	// DHCP Message Type: OFFER
-	// Server Identifier: 10.11.0.65
-
+	discover.UpdateOption(dhcpv4.OptDomainName(domainName))
+	discover.UpdateOption(dhcpv4.OptSubnetMask(serverIPMask))
 }
